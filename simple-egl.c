@@ -21,8 +21,6 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#include "config.h"
-
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,9 +44,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include "shared/helpers.h"
-#include "shared/platform.h"
-#include "shared/weston-egl-ext.h"
+#ifndef MIN
+#define MIN(x,y) (((x) < (y)) ? (x) : (y))
+#endif
 
 struct window;
 struct seat;
@@ -158,9 +156,7 @@ init_egl(struct display *display, struct window *window)
 	if (window->opaque || window->buffer_size == 16)
 		config_attribs[9] = 0;
 
-	display->egl.dpy =
-		weston_platform_get_egl_display(EGL_PLATFORM_WAYLAND_KHR,
-						display->display, NULL);
+	display->egl.dpy = eglGetDisplay((EGLNativeDisplayType) display->display);
 	assert(display->egl.dpy);
 
 	ret = eglInitialize(display->egl.dpy, &major, &minor);
@@ -200,19 +196,6 @@ init_egl(struct display *display, struct window *window)
 
 	display->swap_buffers_with_damage = NULL;
 	extensions = eglQueryString(display->egl.dpy, EGL_EXTENSIONS);
-	if (extensions &&
-	    weston_check_egl_extension(extensions, "EGL_EXT_buffer_age")) {
-		for (i = 0; i < (int) ARRAY_LENGTH(swap_damage_ext_to_entrypoint); i++) {
-			if (weston_check_egl_extension(extensions,
-						       swap_damage_ext_to_entrypoint[i].extension)) {
-				/* The EXTPROC is identical to the KHR one */
-				display->swap_buffers_with_damage =
-					(PFNEGLSWAPBUFFERSWITHDAMAGEEXTPROC)
-					eglGetProcAddress(swap_damage_ext_to_entrypoint[i].entrypoint);
-				break;
-			}
-		}
-	}
 
 	if (display->swap_buffers_with_damage)
 		printf("has EGL_EXT_buffer_age and %s\n", swap_damage_ext_to_entrypoint[i].extension);
@@ -367,9 +350,8 @@ create_surface(struct window *window)
 				     window->geometry.width,
 				     window->geometry.height);
 	window->egl_surface =
-		weston_platform_create_egl_surface(display->egl.dpy,
-						   display->egl.conf,
-						   window->native, NULL);
+		eglCreateWindowSurface(display->egl.dpy, display->egl.conf,
+				      (EGLNativeWindowType) window->native, NULL);
 
 	window->xdg_surface = xdg_wm_base_get_xdg_surface(display->wm_base,
 							  window->surface);
@@ -408,8 +390,7 @@ destroy_surface(struct window *window)
 	eglMakeCurrent(window->display->egl.dpy, EGL_NO_SURFACE, EGL_NO_SURFACE,
 		       EGL_NO_CONTEXT);
 
-	weston_platform_destroy_egl_surface(window->display->egl.dpy,
-					    window->egl_surface);
+	eglDestroySurface(window->display->egl.dpy, window->egl_surface);
 	wl_egl_window_destroy(window->native);
 
 	if (window->xdg_toplevel)
