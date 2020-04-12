@@ -25,21 +25,42 @@ pkg_check_modules(wayland-egl REQUIRED wayland-egl)
 find_package(OpenGL REQUIRED COMPONENTS EGL)
 pkg_check_modules(wayland-cursor REQUIRED wayland-cursor)
 
-pkg_check_modules(decoration REQUIRED decoration)
+pkg_check_modules(decoration QUIET decoration)
 
-include_directories(
-  ${wayland-client_INCLUDE_DIRS}
-  ${wayland-egl_INCLUDE_DIRS}
-  ${wayland-cursor_INCLUDE_DIRS}
-  ${decoration_INCLUDE_DIRS}
+link_directories(
+    ${decoration_LIBRARY_DIRS}
 )
 
 add_executable(${PROJECT_NAME} simple-egl.c ${PROTO_SRC})
-target_link_libraries(${PROJECT_NAME}
+target_include_directories(${PROJECT_NAME} PUBLIC
+  ${wayland-client_INCLUDE_DIRS}
+  ${wayland-egl_INCLUDE_DIRS}
+  ${wayland-cursor_INCLUDE_DIRS}
+)
+target_link_libraries(${PROJECT_NAME} PUBLIC
   ${wayland-client_LIBRARIES}
   ${wayland-egl_LIBRARIES}
   m
   OpenGL::EGL
   ${wayland-cursor_LIBRARIES}
-  ${decoration_LIBRARIES}
 )
+
+if(decoration_FOUND)
+    target_include_directories(${PROJECT_NAME} PUBLIC ${decoration_INCLUDE_DIRS})
+    target_link_libraries(${PROJECT_NAME} PUBLIC ${decoration_LIBRARIES})
+else()
+    include(ExternalProject)
+    ExternalProject_Add(libdecoration
+        PREFIX "${CMAKE_CURRENT_BINARY_DIR}/extern/libdecoration"
+        GIT_REPOSITORY https://gitlab.gnome.org/jadahl/libdecoration.git
+        GIT_TAG master
+        CONFIGURE_COMMAND meson --prefix "${CMAKE_CURRENT_BINARY_DIR}/install" --libdir "lib" ../libdecoration
+        BUILD_COMMAND ninja
+        INSTALL_COMMAND ninja install
+    )
+
+    add_dependencies(${PROJECT_NAME} libdecoration)
+
+    target_include_directories(${PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/install/include")
+    target_link_libraries(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/install/lib/libdecoration${CMAKE_SHARED_LIBRARY_SUFFIX})
+endif()
