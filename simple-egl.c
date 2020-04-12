@@ -40,9 +40,11 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 
-#include "xdg-shell-client-protocol.h"
 #include <sys/types.h>
 #include <unistd.h>
+
+#include <libdecoration/libdecoration.h>
+#include <stdio.h>
 
 #ifndef MIN
 #define MIN(x,y) (((x) < (y)) ? (x) : (y))
@@ -55,7 +57,6 @@ struct display {
 	struct wl_display *display;
 	struct wl_registry *registry;
 	struct wl_compositor *compositor;
-	struct xdg_wm_base *wm_base;
 	struct wl_seat *seat;
 	struct wl_pointer *pointer;
 	struct wl_touch *touch;
@@ -90,12 +91,12 @@ struct window {
 	uint32_t benchmark_time, frames;
 	struct wl_egl_window *native;
 	struct wl_surface *surface;
-	struct xdg_surface *xdg_surface;
-	struct xdg_toplevel *xdg_toplevel;
+	struct wl_surface *focus;
 	EGLSurface egl_surface;
 	struct wl_callback *callback;
 	int fullscreen, maximized, opaque, buffer_size, frame_sync, delay;
 	bool wait_for_configure;
+	struct libdecor_frame *frame;
 };
 
 static const char *vert_shader_text =
@@ -273,71 +274,6 @@ init_gl(struct window *window)
 }
 
 static void
-handle_surface_configure(void *data, struct xdg_surface *surface,
-			 uint32_t serial)
-{
-	struct window *window = data;
-
-	xdg_surface_ack_configure(surface, serial);
-
-	window->wait_for_configure = false;
-}
-
-static const struct xdg_surface_listener xdg_surface_listener = {
-	handle_surface_configure
-};
-
-static void
-handle_toplevel_configure(void *data, struct xdg_toplevel *toplevel,
-			  int32_t width, int32_t height,
-			  struct wl_array *states)
-{
-	struct window *window = data;
-	uint32_t *p;
-
-	window->fullscreen = 0;
-	window->maximized = 0;
-	wl_array_for_each(p, states) {
-		uint32_t state = *p;
-		switch (state) {
-		case XDG_TOPLEVEL_STATE_FULLSCREEN:
-			window->fullscreen = 1;
-			break;
-		case XDG_TOPLEVEL_STATE_MAXIMIZED:
-			window->maximized = 1;
-			break;
-		}
-	}
-
-	if (width > 0 && height > 0) {
-		if (!window->fullscreen && !window->maximized) {
-			window->window_size.width = width;
-			window->window_size.height = height;
-		}
-		window->geometry.width = width;
-		window->geometry.height = height;
-	} else if (!window->fullscreen && !window->maximized) {
-		window->geometry = window->window_size;
-	}
-
-	if (window->native)
-		wl_egl_window_resize(window->native,
-				     window->geometry.width,
-				     window->geometry.height, 0, 0);
-}
-
-static void
-handle_toplevel_close(void *data, struct xdg_toplevel *xdg_toplevel)
-{
-	running = 0;
-}
-
-static const struct xdg_toplevel_listener xdg_toplevel_listener = {
-	handle_toplevel_configure,
-	handle_toplevel_close,
-};
-
-static void
 create_surface(struct window *window)
 {
 	struct display *display = window->display;
@@ -353,18 +289,6 @@ create_surface(struct window *window)
 		eglCreateWindowSurface(display->egl.dpy, display->egl.conf,
 				      (EGLNativeWindowType) window->native, NULL);
 
-	window->xdg_surface = xdg_wm_base_get_xdg_surface(display->wm_base,
-							  window->surface);
-	xdg_surface_add_listener(window->xdg_surface,
-				 &xdg_surface_listener, window);
-
-	window->xdg_toplevel =
-		xdg_surface_get_toplevel(window->xdg_surface);
-	xdg_toplevel_add_listener(window->xdg_toplevel,
-				  &xdg_toplevel_listener, window);
-
-	xdg_toplevel_set_title(window->xdg_toplevel, "simple-egl");
-
 	window->wait_for_configure = true;
 	wl_surface_commit(window->surface);
 
@@ -374,12 +298,6 @@ create_surface(struct window *window)
 
 	if (!window->frame_sync)
 		eglSwapInterval(display->egl.dpy, 0);
-
-	if (!display->wm_base)
-		return;
-
-	if (window->fullscreen)
-		xdg_toplevel_set_fullscreen(window->xdg_toplevel, NULL);
 }
 
 static void
@@ -393,10 +311,6 @@ destroy_surface(struct window *window)
 	eglDestroySurface(window->display->egl.dpy, window->egl_surface);
 	wl_egl_window_destroy(window->native);
 
-	if (window->xdg_toplevel)
-		xdg_toplevel_destroy(window->xdg_toplevel);
-	if (window->xdg_surface)
-		xdg_surface_destroy(window->xdg_surface);
 	wl_surface_destroy(window->surface);
 
 	if (window->callback)
@@ -515,6 +429,11 @@ pointer_handle_enter(void *data, struct wl_pointer *pointer,
 	struct wl_cursor *cursor = display->default_cursor;
 	struct wl_cursor_image *image;
 
+	if (surface != display->window->surface)
+		return;
+
+	display->window->focus = surface;
+
 	if (display->window->fullscreen)
 		wl_pointer_set_cursor(pointer, serial, NULL, 0, 0);
 	else if (cursor) {
@@ -537,6 +456,9 @@ static void
 pointer_handle_leave(void *data, struct wl_pointer *pointer,
 		     uint32_t serial, struct wl_surface *surface)
 {
+	struct display *display = data;
+
+	display->window->focus = NULL;
 }
 
 static void
@@ -552,12 +474,15 @@ pointer_handle_button(void *data, struct wl_pointer *wl_pointer,
 {
 	struct display *display = data;
 
-	if (!display->window->xdg_toplevel)
+	if (!display->window->focus &&
+	    display->window->focus != display->window->surface)
+		return;
+
+	if (!display->window->frame)
 		return;
 
 	if (button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_PRESSED)
-		xdg_toplevel_move(display->window->xdg_toplevel,
-				  display->seat, serial);
+		libdecor_frame_move(display->window->frame, display->seat, serial);
 }
 
 static void
@@ -581,10 +506,10 @@ touch_handle_down(void *data, struct wl_touch *wl_touch,
 {
 	struct display *d = (struct display *)data;
 
-	if (!d->wm_base)
+	if (!d->window->frame)
 		return;
 
-	xdg_toplevel_move(d->window->xdg_toplevel, d->seat, serial);
+	libdecor_frame_move(d->window->frame, d->seat, serial);
 }
 
 static void
@@ -645,14 +570,11 @@ keyboard_handle_key(void *data, struct wl_keyboard *keyboard,
 {
 	struct display *d = data;
 
-	if (!d->wm_base)
-		return;
-
 	if (key == KEY_F11 && state) {
 		if (d->window->fullscreen)
-			xdg_toplevel_unset_fullscreen(d->window->xdg_toplevel);
+			libdecor_frame_unset_fullscreen(d->window->frame);
 		else
-			xdg_toplevel_set_fullscreen(d->window->xdg_toplevel, NULL);
+			libdecor_frame_set_fullscreen(d->window->frame, NULL);
 	} else if (key == KEY_ESC && state)
 		running = 0;
 }
@@ -710,16 +632,6 @@ static const struct wl_seat_listener seat_listener = {
 };
 
 static void
-xdg_wm_base_ping(void *data, struct xdg_wm_base *shell, uint32_t serial)
-{
-	xdg_wm_base_pong(shell, serial);
-}
-
-static const struct xdg_wm_base_listener wm_base_listener = {
-	xdg_wm_base_ping,
-};
-
-static void
 registry_handle_global(void *data, struct wl_registry *registry,
 		       uint32_t name, const char *interface, uint32_t version)
 {
@@ -730,10 +642,6 @@ registry_handle_global(void *data, struct wl_registry *registry,
 			wl_registry_bind(registry, name,
 					 &wl_compositor_interface,
 					 MIN(version, 4));
-	} else if (strcmp(interface, "xdg_wm_base") == 0) {
-		d->wm_base = wl_registry_bind(registry, name,
-					      &xdg_wm_base_interface, 1);
-		xdg_wm_base_add_listener(d->wm_base, &wm_base_listener, d);
 	} else if (strcmp(interface, "wl_seat") == 0) {
 		d->seat = wl_registry_bind(registry, name,
 					   &wl_seat_interface, 1);
@@ -786,6 +694,72 @@ usage(int error_code)
 	exit(error_code);
 }
 
+static void
+frame_configure(struct libdecor_frame *frame,
+		struct libdecor_configuration *configuration,
+		void *user_data)
+{
+	struct window *window = user_data;
+	int width, height;
+	struct libdecor_state *state;
+	enum libdecor_window_state window_state;
+
+	window->wait_for_configure = false;
+
+	if (!libdecor_configuration_get_content_size(configuration, frame,
+						     &width, &height)) {
+		width = window->geometry.width;
+		height = window->geometry.height;
+	}
+
+	if (width > 0 && height > 0) {
+		if (!window->fullscreen && !window->maximized) {
+			window->window_size.width = width;
+			window->window_size.height = height;
+		}
+		window->geometry.width = width;
+		window->geometry.height = height;
+	} else if (!window->fullscreen && !window->maximized) {
+		window->geometry = window->window_size;
+	}
+
+	if (window->native)
+		wl_egl_window_resize(window->native,
+				     window->geometry.width,
+				     window->geometry.height, 0, 0);
+
+	state = libdecor_state_new(width, height);
+	libdecor_frame_commit(frame, state, configuration);
+	libdecor_state_free(state);
+
+	if (!libdecor_configuration_get_window_state(configuration, &window_state))
+		window_state = LIBDECOR_WINDOW_STATE_NONE;
+
+	window->maximized = window_state & LIBDECOR_WINDOW_STATE_MAXIMIZED;
+	window->fullscreen = window_state & LIBDECOR_WINDOW_STATE_FULLSCREEN;
+}
+
+static void
+frame_close(struct libdecor_frame *frame,
+	    void *user_data)
+{
+	running = 0;
+}
+
+static void
+frame_commit(void *user_data)
+{
+	struct window *window = user_data;
+
+	eglSwapBuffers(window->display->display, window->egl_surface);
+}
+
+static struct libdecor_frame_interface libdecor_frame_iface = {
+	frame_configure,
+	frame_close,
+	frame_commit,
+};
+
 int
 main(int argc, char **argv)
 {
@@ -793,6 +767,7 @@ main(int argc, char **argv)
 	struct display display = { 0 };
 	struct window  window  = { 0 };
 	int i, ret = 0;
+	struct libdecor *context;
 
 	window.display = &display;
 	display.window = &window;
@@ -841,6 +816,16 @@ main(int argc, char **argv)
 	sigint.sa_flags = SA_RESETHAND;
 	sigaction(SIGINT, &sigint, NULL);
 
+	context = libdecor_new(display.display, NULL);
+
+	window.frame = libdecor_decorate(context, window.surface, &libdecor_frame_iface, &window);
+	if (!window.frame)
+		exit(EXIT_FAILURE);
+
+	libdecor_frame_set_app_id(window.frame, "EGL decoration demo");
+	libdecor_frame_set_title(window.frame, "EGL decoration demo");
+	libdecor_frame_map(window.frame);
+
 	/* The mainloop here is a little subtle.  Redrawing will cause
 	 * EGL to read events so we can just call
 	 * wl_display_dispatch_pending() to handle any events that got
@@ -855,6 +840,10 @@ main(int argc, char **argv)
 	}
 
 	fprintf(stderr, "simple-egl exiting\n");
+
+	libdecor_frame_unref(window.frame);
+
+	libdecor_unref(context);
 
 	destroy_surface(&window);
 	fini_egl(&display);
@@ -874,9 +863,6 @@ main(int argc, char **argv)
 
 	if (display.seat)
 		wl_seat_destroy(display.seat);
-
-	if (display.wm_base)
-		xdg_wm_base_destroy(display.wm_base);
 
 	if (display.compositor)
 		wl_compositor_destroy(display.compositor);
