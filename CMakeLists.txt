@@ -3,6 +3,23 @@ project(wl_egl_decoration)
 
 include(FindPkgConfig)
 
+set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} \
+    -fsanitize=address \
+    -fsanitize=bool \
+    -fsanitize=bounds \
+    -fsanitize=enum \
+    -fsanitize=float-cast-overflow \
+    -fsanitize=float-divide-by-zero \
+    -fsanitize=nonnull-attribute \
+    -fsanitize=returns-nonnull-attribute \
+    -fsanitize=signed-integer-overflow \
+    -fsanitize=undefined \
+    -fsanitize=vla-bound \
+    -fno-sanitize=alignment \
+    -fsanitize=leak \
+    -fsanitize=object-size \
+")
+
 pkg_check_modules(wayland-client REQUIRED wayland-client>=1.12)
 pkg_check_modules(wayland-egl REQUIRED wayland-egl)
 find_package(OpenGL REQUIRED COMPONENTS EGL)
