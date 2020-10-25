@@ -43,7 +43,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <libdecoration/libdecoration.h>
+#include <libdecoration.h>
 #include <stdio.h>
 
 #ifndef MIN

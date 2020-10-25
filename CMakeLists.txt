@@ -25,7 +25,7 @@ pkg_check_modules(wayland-egl REQUIRED wayland-egl)
 find_package(OpenGL REQUIRED COMPONENTS EGL)
 pkg_check_modules(wayland-cursor REQUIRED wayland-cursor)
 
-pkg_check_modules(decoration QUIET decoration)
+pkg_check_modules(decoration QUIET libdecoration-0)
 
 link_directories(
     ${decoration_LIBRARY_DIRS}
@@ -53,7 +53,7 @@ else()
     ExternalProject_Add(libdecoration
         PREFIX "${CMAKE_CURRENT_BINARY_DIR}/extern/libdecoration"
         GIT_REPOSITORY https://gitlab.gnome.org/jadahl/libdecoration.git
-        GIT_TAG master
+        GIT_TAG wip/api-versions
         CONFIGURE_COMMAND meson --prefix "${CMAKE_CURRENT_BINARY_DIR}/install" --libdir "lib" ../libdecoration
         BUILD_COMMAND ninja
         INSTALL_COMMAND ninja install
