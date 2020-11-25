@@ -7,6 +7,7 @@ pkg_check_modules(wayland-client REQUIRED wayland-client>=1.12)
 pkg_check_modules(wayland-egl REQUIRED wayland-egl)
 find_package(OpenGL REQUIRED COMPONENTS EGL)
 pkg_check_modules(wayland-cursor REQUIRED wayland-cursor)
+pkg_check_modules(gtk REQUIRED gtk+-3.0)
 
 pkg_get_variable(WAYLAND_SCANNER wayland-scanner wayland_scanner)
 pkg_get_variable(WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
@@ -31,6 +32,7 @@ include_directories(
   ${wayland-client_INCLUDE_DIRS}
   ${wayland-egl_INCLUDE_DIRS}
   ${wayland-cursor_INCLUDE_DIRS}
+  ${gtk_INCLUDE_DIRS}
 )
 
 # xdg-shell
@@ -43,4 +45,5 @@ target_link_libraries(${PROJECT_NAME}
   m
   OpenGL::EGL
   ${wayland-cursor_LIBRARIES}
+  ${gtk_LIBRARIES}
 )

@@ -44,6 +44,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <gtk/gtk.h>
+#include <gdk/gdkwayland.h>
+
 #ifndef MIN
 #define MIN(x,y) (((x) < (y)) ? (x) : (y))
 #endif
@@ -55,6 +58,7 @@ struct display {
 	struct wl_display *display;
 	struct wl_registry *registry;
 	struct wl_compositor *compositor;
+	struct wl_subcompositor *subcompositor;
 	struct xdg_wm_base *wm_base;
 	struct wl_seat *seat;
 	struct wl_pointer *pointer;
@@ -96,6 +100,10 @@ struct window {
 	struct wl_callback *callback;
 	int fullscreen, maximized, opaque, buffer_size, frame_sync, delay;
 	bool wait_for_configure;
+
+	GtkWidget *gtk_win;
+	struct wl_surface *gtk_surface;
+	struct wl_subsurface *frame_subsurface;
 };
 
 static const char *vert_shader_text =
@@ -389,6 +397,8 @@ destroy_surface(struct window *window)
 	 * on eglReleaseThread(). */
 	eglMakeCurrent(window->display->egl.dpy, EGL_NO_SURFACE, EGL_NO_SURFACE,
 		       EGL_NO_CONTEXT);
+
+	gtk_widget_destroy(window->gtk_win);
 
 	eglDestroySurface(window->display->egl.dpy, window->egl_surface);
 	wl_egl_window_destroy(window->native);
@@ -730,6 +740,10 @@ registry_handle_global(void *data, struct wl_registry *registry,
 			wl_registry_bind(registry, name,
 					 &wl_compositor_interface,
 					 MIN(version, 4));
+	} else if (strcmp(interface, "wl_subcompositor") == 0) {
+		d->subcompositor =
+			wl_registry_bind(registry, name,
+					 &wl_subcompositor_interface, 1);
 	} else if (strcmp(interface, "xdg_wm_base") == 0) {
 		d->wm_base = wl_registry_bind(registry, name,
 					      &xdg_wm_base_interface, 1);
@@ -784,6 +798,21 @@ usage(int error_code)
 		"  -h\tThis help text\n\n");
 
 	exit(error_code);
+}
+
+static void
+widget_realize_cb (GtkWidget *widget, void *data)
+{
+	struct window *win = data;
+	GdkWindow *window;
+
+	window = gtk_widget_get_window(widget);
+	gdk_wayland_window_set_use_custom_surface(window);
+	win->gtk_surface = gdk_wayland_window_get_wl_surface(window);
+
+	win->frame_subsurface = wl_subcompositor_get_subsurface(
+					win->display->subcompositor,
+					win->gtk_surface, win->surface);
 }
 
 int
@@ -841,6 +870,16 @@ main(int argc, char **argv)
 	sigint.sa_flags = SA_RESETHAND;
 	sigaction(SIGINT, &sigint, NULL);
 
+	gtk_init(&argc, &argv);
+	window.gtk_win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+	gtk_window_set_title(GTK_WINDOW(window.gtk_win), "simple-egl");
+	gtk_window_set_default_size(GTK_WINDOW(window.gtk_win),
+				    window.geometry.width,
+				    window.geometry.height);
+	g_signal_connect (window.gtk_win, "realize",
+			  G_CALLBACK (widget_realize_cb), &window);
+	gtk_widget_show_all(window.gtk_win);
+
 	/* The mainloop here is a little subtle.  Redrawing will cause
 	 * EGL to read events so we can just call
 	 * wl_display_dispatch_pending() to handle any events that got
@@ -849,6 +888,7 @@ main(int argc, char **argv)
 		if (window.wait_for_configure) {
 			ret = wl_display_dispatch(display.display);
 		} else {
+			gtk_main_iteration_do(false);
 			ret = wl_display_dispatch_pending(display.display);
 			redraw(&window, NULL, 0);
 		}
@@ -877,6 +917,9 @@ main(int argc, char **argv)
 
 	if (display.wm_base)
 		xdg_wm_base_destroy(display.wm_base);
+
+	if (display.subcompositor)
+		wl_subcompositor_destroy(display.subcompositor);
 
 	if (display.compositor)
 		wl_compositor_destroy(display.compositor);
