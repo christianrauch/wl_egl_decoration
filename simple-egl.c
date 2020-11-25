@@ -51,6 +51,20 @@
 #define MIN(x,y) (((x) < (y)) ? (x) : (y))
 #endif
 
+static const char *proxy_tag = "simple-egl";
+
+static bool
+own_proxy(struct wl_proxy *proxy)
+{
+	return (wl_proxy_get_tag(proxy) == &proxy_tag);
+}
+
+static bool
+own_surface(struct wl_surface *surface)
+{
+	return own_proxy((struct wl_proxy *) surface);
+}
+
 struct window;
 struct seat;
 
@@ -352,6 +366,7 @@ create_surface(struct window *window)
 	EGLBoolean ret;
 
 	window->surface = wl_compositor_create_surface(display->compositor);
+	wl_proxy_set_tag((struct wl_proxy *) window->surface, &proxy_tag);
 
 	window->native =
 		wl_egl_window_create(window->surface,
@@ -520,6 +535,9 @@ pointer_handle_enter(void *data, struct wl_pointer *pointer,
 		     uint32_t serial, struct wl_surface *surface,
 		     wl_fixed_t sx, wl_fixed_t sy)
 {
+	if (!own_surface(surface))
+	    return;
+
 	struct display *display = data;
 	struct wl_buffer *buffer;
 	struct wl_cursor *cursor = display->default_cursor;
@@ -813,6 +831,11 @@ widget_realize_cb (GtkWidget *widget, void *data)
 	win->frame_subsurface = wl_subcompositor_get_subsurface(
 					win->display->subcompositor,
 					win->gtk_surface, win->surface);
+
+	wl_subsurface_place_below(win->frame_subsurface, win->surface);
+
+	// TODO: use draw area to compute geometry
+	wl_subsurface_set_position(win->frame_subsurface, -10, -10);
 }
 
 int
@@ -849,7 +872,9 @@ main(int argc, char **argv)
 			usage(EXIT_FAILURE);
 	}
 
-	display.display = wl_display_connect(NULL);
+	gtk_init(&argc, &argv);
+
+	display.display = gdk_wayland_display_get_wl_display(gdk_display_get_default());
 	assert(display.display);
 
 	display.registry = wl_display_get_registry(display.display);
@@ -864,18 +889,19 @@ main(int argc, char **argv)
 
 	display.cursor_surface =
 		wl_compositor_create_surface(display.compositor);
+	wl_proxy_set_tag((struct wl_proxy *) display.cursor_surface, &proxy_tag);
 
 	sigint.sa_handler = signal_int;
 	sigemptyset(&sigint.sa_mask);
 	sigint.sa_flags = SA_RESETHAND;
 	sigaction(SIGINT, &sigint, NULL);
 
-	gtk_init(&argc, &argv);
 	window.gtk_win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
 	gtk_window_set_title(GTK_WINDOW(window.gtk_win), "simple-egl");
+	// TODO: remove 1.5 factor
 	gtk_window_set_default_size(GTK_WINDOW(window.gtk_win),
-				    window.geometry.width,
-				    window.geometry.height);
+				    window.geometry.width*1.5,
+				    window.geometry.height*1.5);
 	g_signal_connect (window.gtk_win, "realize",
 			  G_CALLBACK (widget_realize_cb), &window);
 	gtk_widget_show_all(window.gtk_win);
