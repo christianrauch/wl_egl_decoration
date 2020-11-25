@@ -89,6 +89,8 @@ struct display {
 	} egl;
 	struct window *window;
 
+	struct wl_surface *focus;
+
 	PFNEGLSWAPBUFFERSWITHDAMAGEEXTPROC swap_buffers_with_damage;
 };
 
@@ -116,6 +118,7 @@ struct window {
 	bool wait_for_configure;
 
 	GtkWidget *gtk_win;
+	GtkWidget *gtk_area;
 	struct wl_surface *gtk_surface;
 	struct wl_subsurface *frame_subsurface;
 };
@@ -538,10 +541,14 @@ pointer_handle_enter(void *data, struct wl_pointer *pointer,
 	if (!own_surface(surface))
 	    return;
 
+	printf("enter %p\n", surface); fflush(stdout);
+
 	struct display *display = data;
 	struct wl_buffer *buffer;
 	struct wl_cursor *cursor = display->default_cursor;
 	struct wl_cursor_image *image;
+
+	display->focus = surface;
 
 	if (display->window->fullscreen)
 		wl_pointer_set_cursor(pointer, serial, NULL, 0, 0);
@@ -565,6 +572,8 @@ static void
 pointer_handle_leave(void *data, struct wl_pointer *pointer,
 		     uint32_t serial, struct wl_surface *surface)
 {
+	struct display *display = data;
+	display->focus = NULL;
 }
 
 static void
@@ -580,8 +589,13 @@ pointer_handle_button(void *data, struct wl_pointer *wl_pointer,
 {
 	struct display *display = data;
 
+	if (display->focus==NULL || !own_surface(display->focus))
+		return;
+
 	if (!display->window->xdg_toplevel)
 		return;
+
+	printf("button %p\n", wl_pointer); fflush(stdout);
 
 	if (button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_PRESSED)
 		xdg_toplevel_move(display->window->xdg_toplevel,
@@ -607,6 +621,9 @@ touch_handle_down(void *data, struct wl_touch *wl_touch,
 		  uint32_t serial, uint32_t time, struct wl_surface *surface,
 		  int32_t id, wl_fixed_t x_w, wl_fixed_t y_w)
 {
+	if (!own_surface(surface))
+		return;
+
 	struct display *d = (struct display *)data;
 
 	if (!d->wm_base)
@@ -835,7 +852,39 @@ widget_realize_cb (GtkWidget *widget, void *data)
 	wl_subsurface_place_below(win->frame_subsurface, win->surface);
 
 	// TODO: use draw area to compute geometry
-	wl_subsurface_set_position(win->frame_subsurface, -10, -10);
+	GtkAllocation clip;
+	gtk_widget_get_clip(win->gtk_area, &clip);
+	wl_subsurface_set_position(win->frame_subsurface, -clip.x, -clip.y);
+}
+
+static void
+destroy( GtkWidget *widget, gpointer   data )
+{
+   running = 0;
+}
+
+gboolean on_state_change(
+    GtkWidget *widget,
+    GdkEventWindowState *event,
+    gpointer user_data)
+{
+	struct window *win = user_data;
+
+	printf("state change: %i\n", event->new_window_state);
+	if(event->new_window_state & GDK_WINDOW_STATE_MAXIMIZED){
+		printf("maximised\n");
+		gtk_window_maximize(GTK_WINDOW(widget));
+		xdg_toplevel_set_maximized(win->xdg_toplevel);
+	}
+	if(event->new_window_state & GDK_WINDOW_STATE_ICONIFIED){
+		printf("minimised\n");
+		xdg_toplevel_set_minimized(win->xdg_toplevel);
+	}
+	if(event->new_window_state & GDK_WINDOW_STATE_RIGHT_RESIZABLE){
+		printf("resize right\n");
+	}
+	fflush(stdout);
+	return FALSE;
 }
 
 int
@@ -897,6 +946,8 @@ main(int argc, char **argv)
 	sigaction(SIGINT, &sigint, NULL);
 
 	window.gtk_win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+	window.gtk_area = gtk_drawing_area_new();
+	gtk_container_add(GTK_CONTAINER (window.gtk_win), window.gtk_area);
 	gtk_window_set_title(GTK_WINDOW(window.gtk_win), "simple-egl");
 	// TODO: remove 1.5 factor
 	gtk_window_set_default_size(GTK_WINDOW(window.gtk_win),
@@ -904,6 +955,9 @@ main(int argc, char **argv)
 				    window.geometry.height*1.5);
 	g_signal_connect (window.gtk_win, "realize",
 			  G_CALLBACK (widget_realize_cb), &window);
+	g_signal_connect(window.gtk_win, "destroy", G_CALLBACK(destroy), NULL);
+	g_signal_connect(window.gtk_win, "window-state-event",
+			 G_CALLBACK(on_state_change), &window);
 	gtk_widget_show_all(window.gtk_win);
 
 	/* The mainloop here is a little subtle.  Redrawing will cause
