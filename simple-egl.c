@@ -326,29 +326,54 @@ handle_toplevel_configure(void *data, struct xdg_toplevel *toplevel,
 		uint32_t state = *p;
 		switch (state) {
 		case XDG_TOPLEVEL_STATE_FULLSCREEN:
+			printf("STATE_FULLSCREEN\n");
+			gtk_window_fullscreen(window->gtk_win);
 			window->fullscreen = 1;
 			break;
 		case XDG_TOPLEVEL_STATE_MAXIMIZED:
+			printf("STATE_MAXIMIZED\n");
+			gtk_window_maximize(window->gtk_win);
 			window->maximized = 1;
 			break;
 		}
 	}
 
+//	if (width > 0 && height > 0) {
+//		if (!window->fullscreen && !window->maximized) {
+//			window->window_size.width = width;
+//			window->window_size.height = height;
+//		}
+//		window->geometry.width = width;
+//		window->geometry.height = height;
+//	} else if (!window->fullscreen && !window->maximized) {
+//		window->geometry = window->window_size;
+//	}
+
+	printf("cfg: %i x %i\n", width, height);
+
 	if (width > 0 && height > 0) {
 		if (!window->fullscreen && !window->maximized) {
-			window->window_size.width = width;
-			window->window_size.height = height;
+			gtk_window_resize(window->gtk_win, width, height);
 		}
-		window->geometry.width = width;
-		window->geometry.height = height;
-	} else if (!window->fullscreen && !window->maximized) {
-		window->geometry = window->window_size;
 	}
+
+	window->window_size.width = width;
+	window->window_size.height = height;
+
+	GtkAllocation clip;
+	gtk_widget_get_clip(window->gtk_area, &clip);
+	wl_subsurface_set_position(window->frame_subsurface, -clip.x, -clip.y);
+	window->geometry.width = clip.width;
+	window->geometry.height = clip.height;
+
+	printf("area: (%i,%i) + %i x %i\n", clip.x, clip.y, clip.width, clip.height);
 
 	if (window->native)
 		wl_egl_window_resize(window->native,
 				     window->geometry.width,
 				     window->geometry.height, 0, 0);
+
+	fflush(stdout);
 }
 
 static void
@@ -851,7 +876,6 @@ widget_realize_cb (GtkWidget *widget, void *data)
 
 	wl_subsurface_place_below(win->frame_subsurface, win->surface);
 
-	// TODO: use draw area to compute geometry
 	GtkAllocation clip;
 	gtk_widget_get_clip(win->gtk_area, &clip);
 	wl_subsurface_set_position(win->frame_subsurface, -clip.x, -clip.y);
@@ -949,10 +973,9 @@ main(int argc, char **argv)
 	window.gtk_area = gtk_drawing_area_new();
 	gtk_container_add(GTK_CONTAINER (window.gtk_win), window.gtk_area);
 	gtk_window_set_title(GTK_WINDOW(window.gtk_win), "simple-egl");
-	// TODO: remove 1.5 factor
 	gtk_window_set_default_size(GTK_WINDOW(window.gtk_win),
-				    window.geometry.width*1.5,
-				    window.geometry.height*1.5);
+				    window.geometry.width,
+				    window.geometry.height);
 	g_signal_connect (window.gtk_win, "realize",
 			  G_CALLBACK (widget_realize_cb), &window);
 	g_signal_connect(window.gtk_win, "destroy", G_CALLBACK(destroy), NULL);
