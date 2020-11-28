@@ -120,7 +120,9 @@ struct window {
 	GtkWidget *gtk_win;
 	GtkWidget *gtk_area;
 	struct wl_surface *gtk_surface;
-	struct wl_subsurface *frame_subsurface;
+//	struct wl_subsurface *frame_subsurface;
+	struct xdg_surface *gtk_xdg_surface;
+	struct xdg_toplevel *gtk_xdg_toplevel;
 };
 
 static const char *vert_shader_text =
@@ -306,6 +308,8 @@ handle_surface_configure(void *data, struct xdg_surface *surface,
 	xdg_surface_ack_configure(surface, serial);
 
 	window->wait_for_configure = false;
+
+	wl_surface_commit(window->gtk_surface);
 }
 
 static const struct xdg_surface_listener xdg_surface_listener = {
@@ -353,7 +357,7 @@ handle_toplevel_configure(void *data, struct xdg_toplevel *toplevel,
 
 	if (width > 0 && height > 0) {
 		if (!window->fullscreen && !window->maximized) {
-			gtk_window_resize(window->gtk_win, width, height);
+			gtk_window_resize(GTK_WINDOW(window->gtk_win), width, height);
 		}
 	}
 
@@ -362,7 +366,7 @@ handle_toplevel_configure(void *data, struct xdg_toplevel *toplevel,
 
 	GtkAllocation clip;
 	gtk_widget_get_clip(window->gtk_area, &clip);
-	wl_subsurface_set_position(window->frame_subsurface, -clip.x, -clip.y);
+//	wl_subsurface_set_position(window->frame_subsurface, -clip.x, -clip.y);
 	window->geometry.width = clip.width;
 	window->geometry.height = clip.height;
 
@@ -388,6 +392,81 @@ static const struct xdg_toplevel_listener xdg_toplevel_listener = {
 };
 
 static void
+gtk_handle_toplevel_configure(void *data, struct xdg_toplevel *toplevel,
+			      int32_t width, int32_t height,
+			      struct wl_array *states)
+{
+	struct window *window = data;
+	uint32_t *p;
+
+	window->fullscreen = 0;
+	window->maximized = 0;
+	wl_array_for_each(p, states) {
+		uint32_t state = *p;
+		switch (state) {
+		case XDG_TOPLEVEL_STATE_FULLSCREEN:
+			printf("STATE_FULLSCREEN\n");
+			gtk_window_fullscreen(window->gtk_win);
+			window->fullscreen = 1;
+			break;
+		case XDG_TOPLEVEL_STATE_MAXIMIZED:
+			printf("STATE_MAXIMIZED\n");
+			gtk_window_maximize(window->gtk_win);
+			window->maximized = 1;
+			break;
+		}
+	}
+
+//	if (width > 0 && height > 0) {
+//		if (!window->fullscreen && !window->maximized) {
+//			window->window_size.width = width;
+//			window->window_size.height = height;
+//		}
+//		window->geometry.width = width;
+//		window->geometry.height = height;
+//	} else if (!window->fullscreen && !window->maximized) {
+//		window->geometry = window->window_size;
+//	}
+
+	printf("cfg: %i x %i\n", width, height);
+
+	if (width > 0 && height > 0) {
+		if (!window->fullscreen && !window->maximized) {
+			gtk_window_resize(GTK_WINDOW(window->gtk_win), width, height);
+		}
+	}
+
+	window->window_size.width = width;
+	window->window_size.height = height;
+
+	GtkAllocation clip;
+	gtk_widget_get_clip(window->gtk_area, &clip);
+//	wl_subsurface_set_position(window->frame_subsurface, -clip.x, -clip.y);
+	window->geometry.width = clip.width;
+	window->geometry.height = clip.height;
+
+	printf("area: (%i,%i) + %i x %i\n", clip.x, clip.y, clip.width, clip.height);
+
+//	if (window->native)
+//		wl_egl_window_resize(window->native,
+//				     window->geometry.width,
+//				     window->geometry.height, 0, 0);
+
+	fflush(stdout);
+}
+
+static void
+gtk_handle_toplevel_close(void *data, struct xdg_toplevel *xdg_toplevel)
+{
+	running = 0;
+}
+
+static const struct xdg_toplevel_listener gtk_xdg_toplevel_listener = {
+	gtk_handle_toplevel_configure,
+	gtk_handle_toplevel_close,
+};
+
+static void
 create_surface(struct window *window)
 {
 	struct display *display = window->display;
@@ -409,12 +488,12 @@ create_surface(struct window *window)
 	xdg_surface_add_listener(window->xdg_surface,
 				 &xdg_surface_listener, window);
 
-	window->xdg_toplevel =
-		xdg_surface_get_toplevel(window->xdg_surface);
-	xdg_toplevel_add_listener(window->xdg_toplevel,
-				  &xdg_toplevel_listener, window);
+//	window->xdg_toplevel =
+//		xdg_surface_get_toplevel(window->xdg_surface);
+//	xdg_toplevel_add_listener(window->xdg_toplevel,
+//				  &xdg_toplevel_listener, window);
 
-	xdg_toplevel_set_title(window->xdg_toplevel, "simple-egl");
+//	xdg_toplevel_set_title(window->xdg_toplevel, "simple-egl");
 
 	window->wait_for_configure = true;
 	wl_surface_commit(window->surface);
@@ -870,15 +949,24 @@ widget_realize_cb (GtkWidget *widget, void *data)
 	gdk_wayland_window_set_use_custom_surface(window);
 	win->gtk_surface = gdk_wayland_window_get_wl_surface(window);
 
-	win->frame_subsurface = wl_subcompositor_get_subsurface(
-					win->display->subcompositor,
-					win->gtk_surface, win->surface);
+	// use window as toplevel surface
+	win->gtk_xdg_surface = xdg_wm_base_get_xdg_surface(win->display->wm_base, win->gtk_surface);
+	xdg_surface_add_listener(win->gtk_xdg_surface, &xdg_surface_listener, win);
 
-	wl_subsurface_place_below(win->frame_subsurface, win->surface);
+	win->gtk_xdg_toplevel = xdg_surface_get_toplevel(win->gtk_xdg_surface);
+	xdg_toplevel_add_listener(win->gtk_xdg_toplevel, &gtk_xdg_toplevel_listener, win);
 
-	GtkAllocation clip;
-	gtk_widget_get_clip(win->gtk_area, &clip);
-	wl_subsurface_set_position(win->frame_subsurface, -clip.x, -clip.y);
+//	win->frame_subsurface = wl_subcompositor_get_subsurface(
+//					win->display->subcompositor,
+//					win->gtk_surface, win->surface);
+
+//	wl_subsurface_place_below(win->frame_subsurface, win->surface);
+
+	wl_surface_commit(win->gtk_surface);
+
+//	GtkAllocation clip;
+//	gtk_widget_get_clip(win->gtk_area, &clip);
+//	wl_subsurface_set_position(win->frame_subsurface, -clip.x, -clip.y);
 }
 
 static void
@@ -993,7 +1081,8 @@ main(int argc, char **argv)
 		} else {
 			gtk_main_iteration_do(false);
 			ret = wl_display_dispatch_pending(display.display);
-			redraw(&window, NULL, 0);
+//			redraw(&window, NULL, 0);
+			wl_surface_commit(window.gtk_surface);
 		}
 	}
 
